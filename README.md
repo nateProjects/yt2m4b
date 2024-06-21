@@ -29,6 +29,8 @@ The following tools are needed - FFMPEG, YT-DLP, JQ
 brew install ffmpeg yt-dlp jq
 # Linux (Debian based) -
 apt install ffmpef yt-dlp jq
+# Both
+chmod +X yt2m4b
 ```
 
 ## Audiobook players that support M4B

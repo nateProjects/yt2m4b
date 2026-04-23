@@ -4,13 +4,19 @@
 PLAYLIST_URL="https://music.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG"
 MAX_ITEMS=5
 OUTPUT_DIR="/Users/me/Music/Youtube/"
+COVER_IMAGE=""
+TITLE="Youtube Playlist"
+AUTHOR="Various"
 
 # Parse command-line arguments
-while getopts "p:n:o:" opt; do
+while getopts "p:n:o:c:t:a:" opt; do
   case $opt in
     p) PLAYLIST_URL="$OPTARG" ;;
     n) MAX_ITEMS="$OPTARG" ;;
     o) OUTPUT_DIR="$OPTARG" ;;
+    c) COVER_IMAGE="$OPTARG" ;;
+    t) TITLE="$OPTARG" ;;
+    a) AUTHOR="$OPTARG" ;;
     \?) echo "Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
@@ -18,99 +24,93 @@ done
 # Ensure OUTPUT_DIR ends with a trailing slash
 OUTPUT_DIR="${OUTPUT_DIR%/}/"
 
-# Rest of your script remains the same, but replace references to DOWNLOAD_DIR with OUTPUT_DIR
-DOWNLOAD_DIR="$OUTPUT_DIR"
 DATE=$(date +%Y-%m-%d)
 OUTPUT_FILE="${OUTPUT_DIR}ytaudio_$DATE.m4b"
-TEMP_OUTPUT_FILE="${OUTPUT_DIR}temp_ytaudio_$DATE.m4b"
-
 CONCAT_LIST="${OUTPUT_DIR}concat_list.txt"
 CHAPTERS_FILE="${OUTPUT_DIR}chapters.txt"
 
-COVER_IMAGE="cover.jpg"  # Replace with your cover image file path
-
-# Metadata
-TITLE="Youtube Playlist"
-AUTHOR="Various"
-
-# Create a directory for downloaded audio files
+# Create output directory
 mkdir -p "$OUTPUT_DIR"
 
 # Fetch all video IDs from the playlist
 VIDEO_IDS=$(yt-dlp --flat-playlist --dump-single-json "$PLAYLIST_URL" | jq -r ".entries | .[].id")
 
-# Get the latest video ID and remove it from VIDEO_IDS
+# Download the latest video first, then up to MAX_ITEMS from the rest
 LATEST_VIDEO_ID=$(echo "$VIDEO_IDS" | head -n 1)
 VIDEO_IDS=$(echo "$VIDEO_IDS" | tail -n +2)
 
-# Download audio file from the latest video
-LATEST_VIDEO_URL="https://www.youtube.com/watch?v=$LATEST_VIDEO_ID"
-yt-dlp --extract-audio --audio-format mp3 --output "$OUTPUT_DIR/%(title)s.%(ext)s" "$LATEST_VIDEO_URL"
+yt-dlp --extract-audio --audio-format mp3 --output "$OUTPUT_DIR/%(title)s.%(ext)s" \
+  "https://www.youtube.com/watch?v=$LATEST_VIDEO_ID"
 
-# Download audio files from the remaining videos, limiting to MAX_ITEMS
-COUNT=1  # Start counting from 1 for the latest video
+COUNT=1
 for VIDEO_ID in $VIDEO_IDS; do
-    if [ $COUNT -ge $MAX_ITEMS ]; then
-        break
-    fi
-    VIDEO_URL="https://www.youtube.com/watch?v=$VIDEO_ID"
-    yt-dlp --extract-audio --audio-format mp3 --output "$OUTPUT_DIR/%(title)s.%(ext)s" "$VIDEO_URL"
-    ((COUNT++))
+  if [ $COUNT -ge $MAX_ITEMS ]; then
+    break
+  fi
+  yt-dlp --extract-audio --audio-format mp3 --output "$OUTPUT_DIR/%(title)s.%(ext)s" \
+    "https://www.youtube.com/watch?v=$VIDEO_ID"
+  ((COUNT++))
 done
 
 # Find all downloaded MP3 files
-MP3_FILES=("$OUTPUT_DIR"/*.mp3)
+MP3_FILES=("$OUTPUT_DIR"*.mp3)
 
-# Check if any MP3 files were downloaded
 if [ ${#MP3_FILES[@]} -eq 0 ]; then
-  echo "No new videos found in the last week."
+  echo "No MP3 files found."
   exit 0
 fi
 
-# Create a file list for ffmpeg concatenation
+# Build ffmpeg concat list and FFMETADATA chapter file
 rm -f "$CONCAT_LIST" "$CHAPTERS_FILE"
-CHAPTER_START=0
+
+{
+  echo ";FFMETADATA1"
+  echo "title=$TITLE"
+  echo "artist=$AUTHOR"
+  echo ""
+} > "$CHAPTERS_FILE"
+
+CHAPTER_START_MS=0
 for FILE in "${MP3_FILES[@]}"; do
-  DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$FILE")
+  DURATION=$(ffprobe -v error -show_entries format=duration \
+    -of default=noprint_wrappers=1:nokey=1 "$FILE")
+  DURATION_MS=$(awk "BEGIN {printf \"%.0f\", $DURATION * 1000}")
+  CHAPTER_END_MS=$((CHAPTER_START_MS + DURATION_MS))
+
   echo "file '$FILE'" >> "$CONCAT_LIST"
-  echo ";FFMETADATA1" >> "$CHAPTERS_FILE"
-  echo "[CHAPTER]" >> "$CHAPTERS_FILE"
-  echo "TIMEBASE=1/1" >> "$CHAPTERS_FILE"
-    VIDEO_URL="https://www.youtube.com/watch?v=$VIDEO_ID"
-    yt-dlp --extract-audio --audio-format mp3 --output "$OUTPUT_DIR/%(title)s.%(ext)s" "$VIDEO_URL"
-    ((COUNT++))
+  {
+    echo "[CHAPTER]"
+    echo "TIMEBASE=1/1000"
+    echo "START=$CHAPTER_START_MS"
+    echo "END=$CHAPTER_END_MS"
+    echo "title=$(basename "$FILE" .mp3)"
+    echo ""
+  } >> "$CHAPTERS_FILE"
+
+  CHAPTER_START_MS=$CHAPTER_END_MS
 done
 
-# Find all downloaded MP3 files
-MP3_FILES=("$OUTPUT_DIR"/*.mp3)
-
-# Check if any MP3 files were downloaded
-if [ ${#MP3_FILES[@]} -eq 0 ]; then
-  echo "No new videos found in the last week."
-  exit 0
+# Merge into M4B — attach cover image if provided
+if [ -n "$COVER_IMAGE" ] && [ -f "$COVER_IMAGE" ]; then
+  ffmpeg -f concat -safe 0 -i "$CONCAT_LIST" \
+    -i "$CHAPTERS_FILE" \
+    -i "$COVER_IMAGE" \
+    -map 0:a -map 2:v \
+    -map_metadata 1 \
+    -c:a aac \
+    -c:v copy \
+    -disposition:v attached_pic \
+    "$OUTPUT_FILE"
+else
+  ffmpeg -f concat -safe 0 -i "$CONCAT_LIST" \
+    -i "$CHAPTERS_FILE" \
+    -map_metadata 1 \
+    -c:a aac \
+    "$OUTPUT_FILE"
 fi
-
-# Create a file list for ffmpeg concatenation
-rm -f "$CONCAT_LIST" "$CHAPTERS_FILE"
-CHAPTER_START=0
-for FILE in "${MP3_FILES[@]}"; do
-  DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$FILE")
-  echo "file '$FILE'" >> "$CONCAT_LIST"
-  echo ";FFMETADATA1" >> "$CHAPTERS_FILE"
-  echo "[CHAPTER]" >> "$CHAPTERS_FILE"
-  echo "TIMEBASE=1/1" >> "$CHAPTERS_FILE"
-  echo "START=$CHAPTER_START" >> "$CHAPTERS_FILE"
-  CHAPTER_END=$(echo "$CHAPTER_START + $DURATION" | bc)
-  echo "END=$CHAPTER_END" >> "$CHAPTERS_FILE"
-  echo "title=$(basename "$FILE" .mp3)" >> "$CHAPTERS_FILE"
-  CHAPTER_START=$CHAPTER_END
-done
-
-# Merge MP3 files into a single M4B file with chapters using ffmpeg
-ffmpeg -f concat -safe 0 -i "$CONCAT_LIST" -i "$CHAPTERS_FILE" -map_metadata 1 -c:a aac "$OUTPUT_FILE"
 
 # Cleanup
-rm -f "$OUTPUT_DIR"/*.mp3
+rm -f "$OUTPUT_DIR"*.mp3
 rm -f "$CONCAT_LIST" "$CHAPTERS_FILE"
 
 echo "Audiobook created: $OUTPUT_FILE"

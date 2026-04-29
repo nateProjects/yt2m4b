@@ -3,7 +3,7 @@
 # Default values
 PLAYLIST_URL="https://music.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG"
 MAX_ITEMS=5
-OUTPUT_DIR="/Users/me/Music/Youtube/"
+OUTPUT_DIR="."
 COVER_IMAGE=""
 TITLE="Youtube Playlist"
 AUTHOR="Various"
